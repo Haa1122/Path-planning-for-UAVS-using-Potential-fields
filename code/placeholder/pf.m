@@ -87,22 +87,25 @@ function [path, time_pf, metrics] = runPotentialField(risk, start_i, start_j, go
     [nRows,nCols] = size(risk);
     [jGrid,iGrid] = meshgrid(1:nCols, 1:nRows);
 
-    %% === Attractive Potential ============================================
-    k_att = 5e-4;
-    U_att = k_att * ((iGrid - goal_i).^2 + (jGrid - goal_j).^2);
+% Weights controlling distance vs. risk
+w_dist = 1;      % Higher → prefer shorter path
+w_risk = 50;     % Higher → avoid risk more strongly
 
-    %% === Repulsive Potential (Correct for Fatality Risk) ================
-    % Risk is fatality probability → high risk must give high potential.
-    risk_norm = risk / (max(risk(:)) + eps);   % scale 0→1
-    k_rep = 0.02;
-    U_rep = k_rep * risk_norm;
+% Distance-to-goal cost
+U_att = sqrt((iGrid - goal_i).^2 + (jGrid - goal_j).^2);
 
-    % Strong penalty for violating TLS (probabilistic constraint)
-    U_rep(risk > TLS_thr) = U_rep(risk > TLS_thr) + 2.0;
+% Risk-based repulsive cost (inverse risk → high barrier for danger)
+U_rep = w_risk ./ (risk + 1e-12);
 
-    %% === Total Potential Map ============================================
-    U = U_att + U_rep;
-    U = (U - min(U(:))) / (max(U(:)) - min(U(:)) + eps);
+% Cap extreme values to avoid numerical walls
+U_rep(U_rep > 1e6) = 1e6;
+
+% Combined cost field
+U = w_dist * U_att + U_rep;
+
+% Normalize cost field
+U = (U - min(U(:))) / (max(U(:)) - min(U(:)) + eps);
+
 
     %% === Gradient Descent Search ========================================
     path_i = start_i;
@@ -202,4 +205,5 @@ function metrics = evaluate_path_MDPI(path, risk, TLS_total)
     metrics.TLS_feasible = metrics.totalFatalityRisk <= TLS_total;
 
 end
+
 
