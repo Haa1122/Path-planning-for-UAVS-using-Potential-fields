@@ -182,11 +182,11 @@ function [path, time_pf, metrics] = runPotentialField(risk, start_i, start_j, go
     metrics = evaluate_path(path, risk, TLS_thr);
 end
 
-
-function metrics = evaluate_path(path, risk, TLS_thr)
+function metrics = evaluate_path_MDPI(path, risk, TLS_total)
 
     pi = path(:,1);
     pj = path(:,2);
+
     segLen = hypot(diff(pi), diff(pj));
     metrics.length = sum(segLen);
 
@@ -195,10 +195,11 @@ function metrics = evaluate_path(path, risk, TLS_thr)
     metrics.maxRisk  = max(risk_vals);
     metrics.meanRisk = mean(risk_vals);
 
-    %% Correct accumulated fatality probability
+    % accumulated fatality probability
     metrics.totalFatalityRisk = 1 - prod(1 - risk_vals);
 
-    %% TLS Feasibility (probability threshold)
-    metrics.TLS_feasible = all(risk_vals <= TLS_thr);
+    % MDPI-style mission-level TLS constraint
+    metrics.TLS_feasible = metrics.totalFatalityRisk <= TLS_total;
 
 end
+
