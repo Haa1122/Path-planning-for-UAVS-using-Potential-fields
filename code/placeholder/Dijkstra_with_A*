@@ -1,0 +1,281 @@
+% =========================================================================
+% DIJKSTRA (Safest) vs A* (Shortest) COMPARISON
+% =========================================================================
+% This script compares two different mission priorities:
+% 1. Dijkstra Path (Magenta): "Safety First" - Minimizes total Induced Risk.
+% 2. A* Path (Cyan): "Efficiency First" - Minimizes total Distance.
+%
+% -------------------------------------------------------------------------
+% 1. PHYSICAL RISK MODEL (Induced Risk)
+% -------------------------------------------------------------------------
+%   - Induced Risk: P(Failure/sec) * (Distance / Speed) * Map_Consequence.
+%   - This model calculates the statistical probability of a fatality.
+%   - TLS Budget: 1e-8. If the path exceeds this, it is drawn as DOTTED.
+%
+% -------------------------------------------------------------------------
+% 2. OPTIMIZATIONS & DATA STRUCTURES
+% -------------------------------------------------------------------------
+%   - Binary Min-Heap: Array-based heap for O(log N) search performance.
+%   - 8-Connectivity: Allows diagonal flight with edge-risk averaging.
+%   - Dynamic Cell Size: Calculated from Lat/Lon to ground the units in meters.
+%
+% =========================================================================
+
+function dijkstraPathfinder
+    % --- 1. SETUP ---
+    fprintf('Initializing Pathfinding Comparison (Safest vs. Shortest)...\n');
+
+    % --- CONFIGURATION ---
+    DOWNSAMPLE_FACTOR = 1; 
+    ROBOT_SPEED_MS = 15.0;  
+    FAILURE_RATE_PER_HR = 8e-5; 
+    TLS_BUDGET_PER_FLIGHT = 1e-8; 
+    FAILURE_RATE_PER_SEC = FAILURE_RATE_PER_HR / 3600;
+    
+    % --- 1a. Load Data ---
+    EXCEL_FILE_NAME = 'riskMap.xlsx'; 
+    LAT_FILE_NAME   = 'lat.xlsx';
+    LON_FILE_NAME   = 'lon.xlsx';
+    
+    try
+        GRID_FULL = readmatrix(EXCEL_FILE_NAME); 
+    catch
+        error('Could not read %s.', EXCEL_FILE_NAME);
+    end
+    [FULL_ROWS, FULL_COLS] = size(GRID_FULL);
+
+    % --- 1b. Cell Size Calculation ---
+    CELL_SIZE_METERS = 5.0; % Default
+    if exist(LAT_FILE_NAME, 'file') && exist(LON_FILE_NAME, 'file')
+        try
+            LATS = readmatrix(LAT_FILE_NAME);
+            LONS = readmatrix(LON_FILE_NAME);
+            lat1 = LATS(1,1);
+            dLat = abs(LATS(2,1) - LATS(1,1));
+            dLon = abs(LONS(1,2) - LONS(1,1));
+            dy = dLat * 111111;
+            dx = dLon * 111111 * cosd(lat1);
+            CELL_SIZE_METERS = mean([dx, dy]);
+            fprintf('Calculated Cell Size: %.2f meters\n', CELL_SIZE_METERS);
+        catch
+            fprintf('Using default cell size: 5.0m\n');
+        end
+    end
+
+    % --- 1c. Grid Preparation ---
+    GRID_CALC = GRID_FULL;
+    GRID_CALC(isnan(GRID_CALC)) = inf;
+    
+    % --- Start/Goal coordinates [Row, Col] ---
+    START_PT = [105, 280];
+    GOAL_PT   = [390, 310]; 
+    GRID_CALC(START_PT(1), START_PT(2)) = 0;
+    GRID_CALC(GOAL_PT(1), GOAL_PT(2)) = 0;
+
+    % =====================================================================
+    % RUN DIJKSTRA (OPTIMIZE FOR RISK - "THE CAUTIOUS")
+    % =====================================================================
+    SAFE_PENALTY = 1e-9; 
+    fprintf('\n--- Computing Safest Path (Dijkstra) ---\n');
+    [path_safe, risk_safe, dist_safe, time_safe, comp_safe] = run_pathfinder(...
+        GRID_CALC, START_PT, GOAL_PT, FULL_ROWS, FULL_COLS, ...
+        CELL_SIZE_METERS, ROBOT_SPEED_MS, FAILURE_RATE_PER_SEC, ...
+        SAFE_PENALTY, ... 
+        0, 0); 
+
+    % =====================================================================
+    % RUN A* (OPTIMIZE FOR DISTANCE - "THE BRAVE")
+    % =====================================================================
+    BRAVE_PENALTY = 1.0; % Focused on efficiency
+    fprintf('\n--- Computing Shortest/Braver Path (A*) ---\n');
+    [path_brave, risk_brave, dist_brave, time_brave, comp_brave] = run_pathfinder(...
+        GRID_CALC, START_PT, GOAL_PT, FULL_ROWS, FULL_COLS, ...
+        CELL_SIZE_METERS, ROBOT_SPEED_MS, FAILURE_RATE_PER_SEC, ...
+        BRAVE_PENALTY, ... 
+        1, 0); 
+
+    % --- 1d. Logic Check for TLS ---
+    is_safe_feasible = "No"; if risk_safe <= TLS_BUDGET_PER_FLIGHT, is_safe_feasible = "Yes"; end
+    is_brave_feasible = "No"; if risk_brave <= TLS_BUDGET_PER_FLIGHT, is_brave_feasible = "Yes"; end
+
+    % --- 1e. GENERATE TABLE OUTPUT ---
+    fprintf('\n==========================================================\n');
+    fprintf('                  MISSION SUMMARY TABLE                   \n');
+    fprintf('==========================================================\n');
+    
+    RowNames = {'Dijkstra (Safest)'; 'A* (Shortest)'};
+    StartPt = {sprintf('[%d, %d]', START_PT(1), START_PT(2)); sprintf('[%d, %d]', START_PT(1), START_PT(2))};
+    EndPoint = {sprintf('[%d, %d]', GOAL_PT(1), GOAL_PT(2)); sprintf('[%d, %d]', GOAL_PT(1), GOAL_PT(2))};
+    CompTime = [comp_safe; comp_brave];
+    
+    % --- FIX: Convert Distance to Formatted Strings for 3-decimal display ---
+    Distance_m = {sprintf('%.3f', dist_safe); sprintf('%.3f', dist_brave)};
+    
+    FlightTime = [time_safe; time_brave];
+    InducedRisk = [risk_safe; risk_brave];
+    StepPenalty = [SAFE_PENALTY; BRAVE_PENALTY];
+    TLS_Feasible = [is_safe_feasible; is_brave_feasible];
+
+    T = table(StartPt, EndPoint, CompTime, Distance_m, FlightTime, InducedRisk, StepPenalty, TLS_Feasible, ...
+        'RowNames', RowNames, ...
+        'VariableNames', {'Start', 'Goal', 'CompileTime_s', 'Distance_m', 'FlightTime_s', 'InducedRisk', 'Penalty', 'TLS_Pass'});
+    
+    disp(T);
+    fprintf('==========================================================\n');
+
+    % --- VISUALIZATION ---
+    figure('Color', 'w', 'Name', 'Path Comparison');
+    hold on;
+    
+    risk_scaling_factor = FAILURE_RATE_PER_SEC * (CELL_SIZE_METERS / ROBOT_SPEED_MS);
+    GRID_VISUALIZATION = GRID_FULL * risk_scaling_factor;
+    max_display_cost = 8e-5 * risk_scaling_factor; 
+    
+    imagesc(GRID_VISUALIZATION);
+    
+    n = 256; x = [0, 0.3, 0.7, 1.0];
+    c_black=[0,0,0]; c_green=[0,0.5,0]; c_yellow=[0.8,0.8,0]; c_red=[1,0,0];
+    colormap([interp1(x,[c_black(1),c_green(1),c_yellow(1),c_red(1)],linspace(0,1,n))', ...
+              interp1(x,[c_black(2),c_green(2),c_yellow(2),c_red(2)],linspace(0,1,n))', ...
+              interp1(x,[c_black(3),c_green(3),c_yellow(3),c_red(3)],linspace(0,1,n))']);
+    caxis([0, max_display_cost]);
+    colorbar;
+    
+    % 1. Plot A* Path - Solid Cyan
+    if ~isempty(path_brave)
+        plot(path_brave(:, 2), path_brave(:, 1), 'c-', 'LineWidth', 2.5, 'DisplayName', 'A*');
+    end
+    
+    % 2. Plot Dijkstra Path - Magenta Solid/Dotted
+    if ~isempty(path_safe)
+        style = '-'; if is_safe_feasible == "No", style = ':'; end
+        plot(path_safe(:, 2), path_safe(:, 1), 'm', 'LineStyle', style, 'LineWidth', 2.5, 'DisplayName', 'Dijkstra');
+    end
+    
+    plot(START_PT(2), START_PT(1), 'og', 'MarkerSize', 12, 'MarkerFaceColor', 'g', 'DisplayName', 'Start');
+    plot(GOAL_PT(2), GOAL_PT(1), 'xb', 'MarkerSize', 12, 'LineWidth', 3, 'DisplayName', 'Goal');
+    
+    lgd = legend('show', 'Location', 'northeast');
+    set(lgd, 'TextColor', 'k', 'Color', 'w', 'EdgeColor', 'k', 'FontSize', 10);
+
+    axis([0.5 FULL_COLS+0.5 0.5 FULL_ROWS+0.5]);
+    set(gca, 'YDir', 'reverse'); 
+    
+    title('A* and Dijkstra Trajectories on the Risk Map', 'FontSize', 12);
+    % --- UPDATED: Removed (Pixels) from axis names ---
+    xlabel('Longitude'); ylabel('Latitude');
+    grid on; hold off;
+end
+
+% =========================================================================
+% REUSABLE PATHFINDER CORE
+% =========================================================================
+function [path_full, total_risk, total_dist, total_time, elapsed] = ...
+    run_pathfinder(GRID, START, GOAL, ROWS, COLS, CELL_SIZE, SPEED, FAIL_RATE, PENALTY, USE_H, MIN_RISK)
+
+    tic;
+    toInd = @(r, c) (c - 1) * ROWS + r;
+    gScore = inf(ROWS * COLS, 1);
+    closedList = false(ROWS * COLS, 1); 
+    cameFrom = zeros(ROWS * COLS, 1); 
+    
+    heap_fScore = zeros(ROWS * COLS, 1); 
+    heap_indices = zeros(ROWS * COLS, 1);
+    heap_count = 0;
+    node_in_heap_loc = zeros(ROWS * COLS, 1);
+
+    function Push(f, idx)
+        heap_count = heap_count + 1; i = heap_count;
+        while i > 1
+            p = floor(i / 2);
+            if heap_fScore(p) <= f, break; end
+            heap_fScore(i) = heap_fScore(p); heap_indices(i) = heap_indices(p);
+            node_in_heap_loc(heap_indices(i)) = i; i = p;
+        end
+        heap_fScore(i) = f; heap_indices(i) = idx; node_in_heap_loc(idx) = i;
+    end
+    function [min_f, min_idx] = Pop()
+        if heap_count == 0, min_f = inf; min_idx = -1; return; end
+        min_f = heap_fScore(1); min_idx = heap_indices(1);
+        node_in_heap_loc(min_idx) = 0; 
+        last_f = heap_fScore(heap_count); last_idx = heap_indices(heap_count);
+        heap_count = heap_count - 1;
+        if heap_count > 0
+            i = 1;
+            while (2*i) <= heap_count
+                child = 2*i;
+                if child < heap_count && heap_fScore(child+1) < heap_fScore(child), child = child + 1; end
+                if last_f <= heap_fScore(child), break; end
+                heap_fScore(i) = heap_fScore(child); heap_indices(i) = heap_indices(child);
+                node_in_heap_loc(heap_indices(i)) = i; i = child;
+            end
+            heap_fScore(i) = last_f; heap_indices(i) = last_idx; node_in_heap_loc(last_idx) = i;
+        end
+    end
+
+    start_ind = toInd(START(1), START(2));
+    goal_ind = toInd(GOAL(1), GOAL(2));
+    gScore(start_ind) = 0;
+    Push(0, start_ind); 
+
+    path_found = false;
+    while heap_count > 0
+        [~, curr_ind] = Pop();
+        if curr_ind == goal_ind, path_found = true; break; end
+        if closedList(curr_ind), continue; end
+        closedList(curr_ind) = true;
+        
+        c = floor((curr_ind - 1) / ROWS) + 1; r = mod(curr_ind - 1, ROWS) + 1;
+        
+        dr = [-1, 1, 0, 0, -1, -1, 1, 1]; dc = [0, 0, -1, 1, -1, 1, -1, 1];
+        dw = [1, 1, 1, 1, 1.414, 1.414, 1.414, 1.414];
+        
+        for k = 1:8
+            nr = r + dr(k); nc = c + dc(k);
+            if nr >= 1 && nr <= ROWS && nc >= 1 && nc <= COLS
+                risk_n = GRID(nr, nc);
+                if risk_n == inf, continue; end
+                n_ind = (nc - 1) * ROWS + nr;
+                if closedList(n_ind), continue; end
+                
+                dist_step_m = dw(k) * CELL_SIZE;
+                risk_step = (FAIL_RATE * (dist_step_m/SPEED) * ((GRID(r,c) + risk_n)/2));
+                step_cost = risk_step + (PENALTY * dist_step_m);
+                
+                tentative_g = gScore(curr_ind) + step_cost;
+                if tentative_g < gScore(n_ind)
+                    gScore(n_ind) = tentative_g;
+                    cameFrom(n_ind) = curr_ind;
+                    f_val = tentative_g;
+                    if USE_H 
+                        f_val = f_val + (sqrt((nr-GOAL(1))^2 + (nc-GOAL(2))^2) * CELL_SIZE * PENALTY);
+                    end
+                    Push(f_val, n_ind);
+                end
+            end
+        end
+    end
+    elapsed = toc;
+    
+    path_full = []; total_risk = 0; total_dist = 0;
+    if path_found
+        curr = goal_ind;
+        while curr ~= 0
+            c = floor((curr - 1) / ROWS) + 1; r = mod(curr - 1, ROWS) + 1;
+            path_full = [r, c; path_full];
+            if curr == start_ind, break; end
+            curr = cameFrom(curr);
+        end
+        for i = 1:size(path_full,1)-1
+            d = 1.0; if any(path_full(i,1) ~= path_full(i+1,1)) || any(path_full(i,2) ~= path_full(i+1,2))
+                if (path_full(i,1) ~= path_full(i+1,1)) && (path_full(i,2) ~= path_full(i+1,2))
+                    d = 1.414;
+                end
+            end
+            dm = d * CELL_SIZE; total_dist = total_dist + dm;
+            ravg = (GRID(path_full(i,1), path_full(i,2)) + GRID(path_full(i+1,1), path_full(i+1,2)))/2;
+            total_risk = total_risk + (FAIL_RATE * (dm/SPEED) * ravg);
+        end
+    end
+    total_time = total_dist / SPEED;
+end
